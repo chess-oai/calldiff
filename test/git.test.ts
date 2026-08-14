@@ -122,7 +122,8 @@ test.skipIf(process.platform === "win32")(
 
 test("reads commit source blobs in a batch", () => {
   const cwd = makeRepo();
-  const oddPath = "src/line\nbreak.ts";
+  const oddPath =
+    process.platform === "win32" ? "src/line break.ts" : "src/line\nbreak.ts";
   mkdirSync(join(cwd, "src"));
   writeFileSync(join(cwd, "src/main.ts"), 'export const café = "☕";\n');
   writeFileSync(join(cwd, oddPath), "export function odd() {}\n");
@@ -141,4 +142,32 @@ test("reads commit source blobs in a batch", () => {
   expect(files.every((file) => Boolean(file.oid))).toBe(true);
   expect(sources.get("src/main.ts")).toBe('export const café = "☕";\n');
   expect(sources.get(oddPath)).toBe("export function odd() {}\n");
+});
+
+test("scopes commit and worktree files with Windows and suffix path filters", () => {
+  const cwd = makeRepo();
+  mkdirSync(join(cwd, "src/nested"), { recursive: true });
+  mkdirSync(join(cwd, "other"));
+  writeFileSync(join(cwd, "src/nested/main.ts"), "export function main() {}\n");
+  writeFileSync(join(cwd, "other/domain.ts"), "export function domain() {}\n");
+  writeFileSync(join(cwd, "other/skip.ts"), "export function skip() {}\n");
+  writeFileSync(join(cwd, "other/view.tsx"), "export function View() {}\n");
+  commitAll(cwd);
+
+  const snapshots: Snapshot[] = [
+    { kind: "commit", ref: "HEAD" },
+    { kind: "worktree", ref: "WORKTREE" },
+  ];
+
+  for (const snapshot of snapshots) {
+    expect(
+      listSnapshotFiles(cwd, snapshot, ["src\\nested"]).map((file) => file.path),
+    ).toEqual(["src/nested/main.ts"]);
+    expect(
+      listSnapshotFiles(cwd, snapshot, ["main.ts"]).map((file) => file.path),
+    ).toEqual(["other/domain.ts", "src/nested/main.ts"]);
+    expect(
+      listSnapshotFiles(cwd, snapshot, ["tsx"]).map((file) => file.path),
+    ).toEqual(["other/view.tsx"]);
+  }
 });

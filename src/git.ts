@@ -178,13 +178,14 @@ function isRegularFile(path: string): boolean {
   }
 }
 
-function listWorktreeFiles(cwd: string): SnapshotFile[] {
+function listWorktreeFiles(cwd: string, pathspecs: string[]): SnapshotFile[] {
   const output = git(cwd, [
     "ls-files",
     "-z",
     "--cached",
     "--others",
     "--exclude-standard",
+    ...(pathspecs.length > 0 ? ["--", ...pathspecs] : []),
   ]);
 
   return output
@@ -196,8 +197,19 @@ function listWorktreeFiles(cwd: string): SnapshotFile[] {
     .map((path) => ({ path }));
 }
 
-function listCommitFiles(cwd: string, ref: string): SnapshotFile[] {
-  const output = git(cwd, ["ls-tree", "-r", "-z", "-l", ref]);
+function listCommitFiles(
+  cwd: string,
+  ref: string,
+  pathspecs: string[],
+): SnapshotFile[] {
+  const output = git(cwd, [
+    "ls-tree",
+    "-r",
+    "-z",
+    "-l",
+    ref,
+    ...(pathspecs.length > 0 ? ["--", ...pathspecs] : []),
+  ]);
   const files: SnapshotFile[] = [];
 
   for (const record of output.split("\0")) {
@@ -244,13 +256,26 @@ export function listSnapshotFiles(
   snapshot: Snapshot,
   pathFilters: string[] = [],
 ): SnapshotFile[] {
+  const normalizedFilters = pathFilters.map((filter) =>
+    filter.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, ""),
+  );
+  const pathspecs = normalizedFilters.every((filter) => {
+    if (filter === "") return false;
+    try {
+      return lstatSync(resolve(cwd, filter)).isDirectory();
+    } catch {
+      return false;
+    }
+  })
+    ? normalizedFilters.map((filter) => `:(literal)${filter}`)
+    : [];
   const files =
     snapshot.kind === "worktree"
-      ? listWorktreeFiles(cwd)
-      : listCommitFiles(cwd, snapshot.ref);
+      ? listWorktreeFiles(cwd, pathspecs)
+      : listCommitFiles(cwd, snapshot.ref, pathspecs);
 
   return files
-    .filter((file) => pathAllowed(file.path, pathFilters))
+    .filter((file) => pathAllowed(file.path, normalizedFilters))
     .sort((a, b) => a.path.localeCompare(b.path));
 }
 

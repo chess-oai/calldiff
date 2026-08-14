@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export type GrammarModule = {
   language?: unknown;
@@ -129,23 +129,36 @@ export function loadGrammarPackage(npmPackage: string): GrammarModule {
   if (!packageInstalled(cacheDir, npmPackage)) {
     ensureCachePackageJson(cacheDir);
     const installSpec = INSTALL_SPEC[npmPackage] ?? npmPackage;
-    execFileSync(
-      "npm",
-      [
-        "install",
-        "--prefix",
-        cacheDir,
-        "--no-save",
-        "--no-fund",
-        "--no-audit",
-        "--legacy-peer-deps",
-        installSpec,
-      ],
-      {
-        stdio: ["ignore", "pipe", "pipe"],
-        env: process.env,
-      },
-    );
+    const args = [
+      "install",
+      "--prefix",
+      cacheDir,
+      "--no-save",
+      "--no-fund",
+      "--no-audit",
+      "--legacy-peer-deps",
+      installSpec,
+    ];
+    const command = process.platform === "win32" ? process.execPath : "npm";
+    const commandArgs =
+      process.platform === "win32"
+        ? [
+            join(
+              dirname(process.execPath),
+              "node_modules",
+              "npm",
+              "bin",
+              "npm-cli.js",
+            ),
+            ...args,
+          ]
+        : args;
+
+    execFileSync(command, commandArgs, {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+      windowsHide: true,
+    });
   }
 
   const require = createRequire(join(cacheDir, "package.json"));
