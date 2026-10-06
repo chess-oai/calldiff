@@ -11,14 +11,21 @@ function work() { write(); }`;
 
 describe("PR publication gate", () => {
   test("publishes a connected change through the real CLI", () => {
-    const host = workspace({ "flow.ts": before });
-    const head = host.commit("reroute", { "flow.ts": after });
+    const host = workspace({
+      "flow.ts": before,
+      "src/gen/types.ts": "generated before",
+    });
+    const head = host.commit("reroute", {
+      "flow.ts": after,
+      "src/gen/types.ts": "generated after",
+    });
     const output = host.run(["publication", "HEAD~", head, "--format", "json"]);
     expect(output.code).toBe(0);
     const result = JSON.parse(output.stdout);
     expect(result).toMatchObject({ decision: "include", coverage: 1 });
     expect(result.changedFunctions).toHaveLength(2);
     expect(result.coveredFunctions).toHaveLength(2);
+    expect(result.excludedFiles).toContain("src/gen/types.ts");
     expect(result.ascii).toContain("newLog()");
     expect(result.ascii).toContain("read()");
   });

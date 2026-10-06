@@ -28,7 +28,7 @@ type Candidate = { result: DiffTreeResult; covered: Set<string>; lines: number }
 
 const limits = Object.freeze({ coverage: 0.8, excerpts: 2, lines: 30, depth: 4 });
 const excluded =
-  /(^|\/)(?:__tests__|__fixtures__|__mocks__|tests?|fixtures?|generated|vendor|node_modules|dist)(\/|$)|\.(?:test|spec|generated|gen)\.[^/]+$|\.d\.(?:ts|mts|cts)$/i;
+  /(^|\/)(?:__tests__|__fixtures__|__mocks__|tests?|fixtures?|generated|gen|vendor|node_modules|dist)(\/|$)|\.(?:test|spec|generated|gen)\.[^/]+$|\.d\.(?:ts|mts|cts)$/i;
 const supported = /\.(?:ts|tsx|mts|cts)$/i;
 const sourceExtensions = new Set(listSupportedExtensions());
 
@@ -42,6 +42,7 @@ export function runPublication(options: {
     options.cwd ?? process.cwd(),
     options.base,
     options.head,
+    (file) => !excluded.test(file) && supported.test(file),
   );
   const reasons: string[] = [];
   const excludedFiles = snapshots.paths.filter((file) => excluded.test(file));

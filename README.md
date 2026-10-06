@@ -129,7 +129,8 @@ eligible excerpt, but should not override a failed gate without author direction
 
 This first version supports TypeScript and TSX, including `.mts` and `.cts`.
 It excludes declaration files, conventional test/spec and generated filenames,
-and test, fixture, mock, generated, vendor, dependency, and build directories.
+and test, fixture, mock, generated (`gen` or `generated`), vendor, dependency,
+and build directories. Excluded and unsupported file contents are not loaded.
 These are path conventions, not a semantic classifier; inspect `excludedFiles`
 when adopting the command in a repository with different conventions.
 
