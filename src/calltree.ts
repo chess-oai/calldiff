@@ -158,7 +158,7 @@ function expandSteps(
         ),
       };
     }
-    return expandCall(
+    const call = expandCall(
       step.key,
       index,
       depth,
@@ -169,6 +169,9 @@ function expandSteps(
       undefined,
       owner,
     );
+    return step.label
+      ? { ...call, label: step.label + (call.label.endsWith(" ⇄") ? " ⇄" : "") }
+      : call;
   });
 }
 

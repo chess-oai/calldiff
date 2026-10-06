@@ -412,3 +412,33 @@ export function readSnapshotFiles(
 export function describeSnapshot(snapshot: Snapshot): string {
   return snapshot.kind === "worktree" ? "working tree" : snapshot.ref;
 }
+
+/** Full PR comparison, independent of the invoking subdirectory or sparse checkout. */
+export function readPublicationSnapshots(
+  cwd: string,
+  base: string,
+  head: string,
+  readFile: (path: string) => boolean = () => true,
+) {
+  const root = git(cwd, ["rev-parse", "--show-toplevel"]).trim();
+  const to = git(root, ["rev-parse", "--verify", `${head}^{commit}`]).trim();
+  const from = git(root, ["merge-base", base, to]).trim();
+  const paths = git(root, ["diff", "--no-renames", "--name-only", "-z", from, to])
+    .split("\0")
+    .filter(Boolean)
+    .sort();
+  const sourcePaths = paths.filter(readFile);
+  const read = (ref: string) =>
+    readSnapshotFiles(
+      root,
+      { kind: "commit", ref },
+      sourcePaths.length === 0
+        ? []
+        : listCommitFiles(
+            root,
+            ref,
+            sourcePaths.map((path) => `:(literal)${path}`),
+          ),
+    );
+  return { from, to, paths, before: read(from), after: read(to) };
+}

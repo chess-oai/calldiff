@@ -5,6 +5,7 @@ export interface SourceLoc {
   file: string;
   /** 1-based start line */
   line: number;
+  column?: number;
   /** 1-based end line when the span covers multiple lines */
   endLine?: number;
 }
@@ -22,6 +23,7 @@ export interface CallNode {
    */
   file?: string;
   line?: number;
+  column?: number;
   endLine?: number;
   children: CallNode[];
 }
@@ -31,9 +33,11 @@ export type CallStep =
   | {
       type: "call";
       key: string;
+      label?: string;
       /** Call-expression span in the caller file. */
       file?: string;
       line?: number;
+      column?: number;
       endLine?: number;
       /** Inline children (e.g. JSX component children at the call site). */
       children?: CallStep[];
@@ -45,6 +49,7 @@ export type CallStep =
       /** Branch keyword / condition span. */
       file?: string;
       line?: number;
+      column?: number;
       endLine?: number;
       children: CallStep[];
     };
@@ -58,6 +63,7 @@ export interface DiffNode {
   kind?: CallNodeKind;
   file?: string;
   line?: number;
+  column?: number;
   endLine?: number;
   children: DiffNode[];
 }
@@ -81,6 +87,7 @@ export interface FunctionInfo {
   end: number;
   /** 1-based definition line (derived from start/end + source) */
   line?: number;
+  column?: number;
   endLine?: number;
 }
 

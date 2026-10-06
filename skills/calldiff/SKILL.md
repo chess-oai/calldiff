@@ -5,6 +5,35 @@ requires_bin: calldiff
 command: calldiff
 ---
 
+# PR descriptions
+
+Before including call-flow output in a PR description, run:
+
+```sh
+calldiff publication <base-ref> <head-ref> --format json
+```
+
+The tool calculates coverage across the complete committed PR and selects
+bounded excerpts. Publish only its selected `ascii` when `decision` is `include`
+and the excerpt helps explain the PR. Do not select another stack to bypass the
+gate. An explicit author request may override this publication policy.
+
+For `omit` or `unsupported`, omit the entire Calldiff section. Keep reasons and
+tool limitations in the investigation, not in the PR description. `unsupported`
+does not mean no behavior changed. Publication supports TypeScript/TSX and JavaScript/JSX. Expansion follows
+unambiguous lexical definitions and explicit named relative imports between
+changed files. Callback bodies and passed references do not establish runtime
+invocation timing.
+
+`flowCoverage` measures represented call/control-flow edits; `coverage` measures
+breadth across executable-changed definitions. Neither measures semantic
+correctness or usefulness. Before publishing, check that the selected roots
+explain the PR's central behavior. Veto a helper move, incidental configuration,
+or cleanup excerpt when it misses the change the reviewer needs to understand.
+Keep the excerpt's scope clear in the surrounding PR narrative.
+
+The commands below remain available for investigation regardless of the gate.
+
 # calldiff diff
 
 Diff call stacks between two git trees
