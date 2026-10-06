@@ -34,17 +34,24 @@ export function extractFunctions(
   const extractor = detectLanguage(file);
   if (!extractor) return [];
 
-  const language = loadLanguage(
-    extractor.grammarPackage,
-    extractor.grammarExport,
-  );
-  parser.setLanguage(language as any);
-  const tree = parser.parse(source);
+  const tree = parseSource(file, source);
   return extractor.extract(file, source, tree).map((fn) => {
     if (fn.line != null) return fn;
     const lines = linesFromOffsets(source, fn.start, fn.end);
     return { ...fn, ...lines };
   });
+}
+
+export function parseSource(file: string, source: string): Parser.Tree {
+  const extractor = detectLanguage(file);
+  if (!extractor) throw new Error(`Unsupported source file: ${file}`);
+
+  const language = loadLanguage(
+    extractor.grammarPackage,
+    extractor.grammarExport,
+  );
+  parser.setLanguage(language as any);
+  return parser.parse(source);
 }
 
 type CachedFunction = Omit<FunctionInfo, "file">;

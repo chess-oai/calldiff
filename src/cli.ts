@@ -4,6 +4,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Cli, z } from "incur";
 import { runDiff, runReach, runTree } from "./run.js";
+import { runPublication } from "./publication.js";
+import type { PublicationResult } from "./publication.js";
 import type { DiffResult, ReachResult, TreeResult } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -83,7 +85,7 @@ type EmitContext = {
  */
 function emitAsciiOrData(
   c: EmitContext,
-  result: DiffResult | TreeResult | ReachResult,
+  result: DiffResult | TreeResult | ReachResult | PublicationResult,
   cta?: CtaMeta,
 ): unknown {
   if (!c.formatExplicit) {
@@ -126,7 +128,7 @@ export const cli = Cli.create("calldiff", {
   description:
     "Diff call stacks across git commits for agentic code review (22 languages)",
   version: readVersion(),
-  hint: "Commands: diff (compare two trees), tree (view one tree), reach (paths between symbols). Path filters are trailing positionals (a leading -- is also accepted). Use --format json for structured agent output.",
+  hint: "Commands: diff (compare two trees), tree (view one tree), reach (paths between symbols), publication (gate PR excerpts). Investigation path filters are trailing positionals (a leading -- is also accepted). Use --format json for structured agent output.",
   sync: {
     // One skill file covering all commands (default incur depth is 1 = per-command).
     depth: 0,
@@ -137,6 +139,28 @@ export const cli = Cli.create("calldiff", {
     ],
   },
 })
+  .command("publication", {
+    description:
+      "Gate PR call-flow excerpts using automated AST coverage (TypeScript/TSX)",
+    args: z.object({
+      base: z.string().describe("PR base ref; compare its merge base with head"),
+      head: z.string().describe("Committed PR head ref"),
+    }),
+    run(c) {
+      try {
+        return emitAsciiOrData(
+          c,
+          runPublication({ base: c.args.base, head: c.args.head }),
+        );
+      } catch (error) {
+        return c.error({
+          code: "PUBLICATION_FAILED",
+          message: error instanceof Error ? error.message : String(error),
+          exitCode: 1,
+        });
+      }
+    },
+  })
   .command("diff", {
     description: "Diff call stacks between two git trees",
     args: z.object({

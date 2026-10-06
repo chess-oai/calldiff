@@ -20,4 +20,6 @@ export { formatSourceLoc, pickLoc } from "./loc.js";
 export { collectPathsTo, findReachPaths, pathToTree } from "./reach.js";
 export { renderDiff, renderTree } from "./render.js";
 export { runDiff, runReach, runTree } from "./run.js";
+export { runPublication } from "./publication.js";
+export type { PublicationResult } from "./publication.js";
 export type * from "./types.js";

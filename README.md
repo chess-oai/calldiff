@@ -86,6 +86,63 @@ If you omit `--entry` / `--file`, calldiff infers exported functions whose expan
 
 `--file` / `-F` takes an indexed source path and expands to every **exported** symbol defined in that file (useful in monorepos). Matching is exact path, or a unique suffix (`boot.ts` → `packages/api/src/boot.ts`). Ambiguous matches error so you can pass a more specific path. `--entry` / `-e` is symbols only.
 
+### PR publication gate
+
+Use `publication` before adding a call-flow excerpt to a PR description:
+
+```sh
+calldiff publication origin/main HEAD --format json
+```
+
+The command compares the merge base with the committed head. It reads changed
+source files from Git at the repository root, even when invoked from a package
+directory or sparse checkout. It accepts no path or entrypoint filters, so a
+narrow excerpt cannot shrink the coverage denominator.
+
+Coverage is the number of changed functions whose complete direct call-flow
+edits appear in the selected excerpts, divided by all functions with executable
+AST changes. Each source function counts once. Comments, formatting, and erased
+TypeScript types do not count; argument and literal fixes do count, even when
+their call trees are unchanged. Nested named functions are counted separately
+from their enclosing function. Matching uses file, enclosing function scope, and
+name; moves and renames count as removals and additions.
+
+The fixed initial gate requires:
+
+- At least two directly changed functions connected in each excerpt
+- At least 80% coverage across the PR
+- At most two excerpts and 30 total tree lines, including the separator
+- At most four call edges below each root, with no credit for clipped bodies
+
+Candidates come from definitions in the changed files. Selection maximizes
+distinct covered functions, then minimizes lines, then uses stable source
+identity order. Unchanged siblings are pruned unless needed to show the context
+of a direct edit, such as reordered calls.
+
+The JSON result contains `decision`, `reasons`, `coverage` (a fraction),
+`changedFunctions`, `coveredFunctions`, `excludedFiles`, `limits`, and `trees`.
+Only `include` returns publishable `ascii`. `omit` means the gate did not pass.
+`unsupported` has null coverage because the tool cannot certify the comparison;
+its function inventory may be incomplete. Neither result should produce a
+Calldiff section or diagnostic text in a PR description. An agent may omit an
+eligible excerpt, but should not override a failed gate without author direction.
+
+This first version supports TypeScript and TSX, including `.mts` and `.cts`.
+It excludes declaration files, conventional test/spec and generated filenames,
+and test, fixture, mock, generated, vendor, dependency, and build directories.
+These are path conventions, not a semantic classifier; inspect `excludedFiles`
+when adopting the command in a repository with different conventions.
+
+To avoid guessed call relationships, expansion follows only unambiguous lexical
+definitions in the same changed file. Imported and dynamic targets remain
+opaque leaves. Unchanged files are not indexed. Changed anonymous callbacks,
+parse failures, and unsupported source languages prevent publication. Flow
+changes involving constructs the extractor does not model, including await,
+loops, try/switch, short-circuit evaluation, and conditional exits, also return
+`unsupported`. Module-level changes are outside the function coverage metric.
+These limits favor omission; the thresholds are starting policy, not a measured
+guarantee that an excerpt explains the PR's purpose.
+
 ### `tree`
 
 | Invocation | Tree from |
