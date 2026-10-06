@@ -102,7 +102,9 @@ narrow excerpt cannot shrink the coverage denominator.
 The gate measures two things across the complete PR:
 
 - **Flow coverage** (`flowCoverage`): the fraction of added/removed call and
-  control-flow nodes represented by the selected excerpts. Changes are counted
+  control-flow units represented by the selected excerpts. Existing definitions
+  count their changed nodes; a new or removed definition counts as one unit, so
+  a helper extraction cannot drown out changes at its callers. Changes are counted
   at their source definitions, so expanding the same helper twice earns no extra
   credit. A function earns credit only when all its flow edits are visible;
   depth-clipped callback bodies do not count.
@@ -135,7 +137,7 @@ such as event names and callback references. Argument changes alone do not count
 as call-flow changes.
 
 The result contains `decision`, `reasons`, both coverage fractions,
-`changedFlowNodes`, `coveredFlowNodes`, `changedFunctions`,
+`changedFlowUnits`, `coveredFlowUnits`, `changedFunctions`,
 `flowChangedFunctions`, `coveredFunctions`, `excludedFiles`, `limits`, and
 `trees`. Only `include` returns publishable `ascii`. `omit` means the gate did
 not pass. `unsupported` has null coverage because parsing, ambiguous identities,

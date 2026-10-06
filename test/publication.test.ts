@@ -329,7 +329,7 @@ describe("PR publication gate", () => {
     });
     expect(result).toMatchObject({
       decision: "omit",
-      coveredFlowNodes: 0,
+      coveredFlowUnits: 0,
       coveredFunctions: [],
     });
   });
@@ -363,5 +363,20 @@ describe("PR publication gate", () => {
         ?.children.map((node) => node.label),
     ).toEqual(["prepare()", "deliver(…)"]);
     expect(children.some((node) => node.label === "prepare()")).toBe(false);
+  });
+  test("keeps a new helper body from outweighing changed caller behavior", () => {
+    const host = workspace({
+      "flow.ts": `function onClose() { hide(); }
+      function settings() { read(); }`,
+    });
+    host.commit("quit behavior and settings helper", {
+      "flow.ts": `
+      function onClose() { if (quitting) { preventDefault(); quit(); return; } hide(); }
+      function settings() { initialize(); read(); }
+      function initialize() { scan(); parse(); validate(); join(); resolve(); cache(); }`,
+    });
+    const result = runPublication({ cwd: host.root, base: "HEAD~", head: "HEAD" });
+    expect(result.decision).toBe("include");
+    expect(result.trees.map((tree) => tree.entry)).toEqual(["flow.ts::onClose"]);
   });
 });

@@ -18,8 +18,8 @@ export type PublicationResult = {
   coverage: number | null;
   flowCoverage: number | null;
   flowChangedFunctions: string[];
-  changedFlowNodes: number;
-  coveredFlowNodes: number;
+  changedFlowUnits: number;
+  coveredFlowUnits: number;
   changedFunctions: string[];
   coveredFunctions: string[];
   excludedFiles: string[];
@@ -132,8 +132,8 @@ export function runPublication(options: {
     coverage: null,
     flowCoverage: null,
     flowChangedFunctions: [...flowChanged].sort(),
-    changedFlowNodes: 0,
-    coveredFlowNodes: 0,
+    changedFlowUnits: 0,
+    coveredFlowUnits: 0,
     changedFunctions,
     coveredFunctions: [],
     excludedFiles,
@@ -159,7 +159,10 @@ export function runPublication(options: {
       return [id, direct ? changedNodes(direct) : new Set<string>()];
     }),
   );
-  result.changedFlowNodes = [...edits.values()].reduce((sum, nodes) => sum + nodes.size, 0);
+  // A new/removed definition is one structural change. Counting every node in
+  // its body lets an extracted helper outweigh the caller behavior being changed.
+  const flowWeight = (id: string) => (before.has(id) && after.has(id) ? edits.get(id)!.size : 1);
+  result.changedFlowUnits = [...flowChanged].reduce((sum, id) => sum + flowWeight(id), 0);
   const candidates: Candidate[] = [];
   for (const id of [...flowChanged].sort()) {
     const left = beforeIndex.get(id);
@@ -253,10 +256,10 @@ export function runPublication(options: {
     const lines = items.reduce((sum, item) => sum + item.lines, items.length - 1);
     if (lines > limits.lines) return;
     const union = new Set(items.flatMap((item) => [...item.covered]));
-    const editCount = [...union].reduce((sum, key) => sum + edits.get(key)!.size, 0);
+    const editCount = [...union].reduce((sum, key) => sum + flowWeight(key), 0);
     const passes =
       union.size / changedFunctions.length >= limits.coverage &&
-      editCount / result.changedFlowNodes >= limits.flowCoverage;
+      editCount / result.changedFlowUnits >= limits.flowCoverage;
     const existingRoot = items.some(
       (item) => before.has(item.result.entry) && after.has(item.result.entry),
     );
@@ -286,8 +289,8 @@ export function runPublication(options: {
   }
   result.coveredFunctions = [...covered].sort();
   result.coverage = changedFunctions.length ? covered.size / changedFunctions.length : 0;
-  result.coveredFlowNodes = coveredEdits;
-  result.flowCoverage = result.changedFlowNodes ? coveredEdits / result.changedFlowNodes : 0;
+  result.coveredFlowUnits = coveredEdits;
+  result.flowCoverage = result.changedFlowUnits ? coveredEdits / result.changedFlowUnits : 0;
   result.decision =
     result.coverage >= limits.coverage && result.flowCoverage >= limits.flowCoverage
       ? "include"
@@ -309,8 +312,8 @@ function publicationIndex(functions: Map<string, PublicationFunction>, changed: 
     definitions.map((fn) => {
       const steps = (items: CallStep[]): CallStep[] =>
         items.map((step) => {
-          // Expand only lexical definitions in this file. Imported/dynamic calls remain
-          // opaque leaves; the ordinary graph's global name fallback cannot prove identity.
+          // Expand only proven lexical or named relative-import targets; the ordinary
+          // graph's global name fallback cannot prove identity.
           const shadowed = definitions.some(
             (owner) =>
               owner.info.file === fn.info.file &&
