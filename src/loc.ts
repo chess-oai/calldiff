@@ -2,16 +2,18 @@ import type { SourceLoc } from "./types.js";
 
 /** Pick optional loc fields for spreading onto a node/step. */
 export function pickLoc(
-  loc:
-    | { file?: string; line?: number; endLine?: number }
-    | null
-    | undefined,
+  loc: { file?: string; line?: number; column?: number; endLine?: number } | null | undefined,
 ): Partial<SourceLoc> {
   if (!loc?.file || loc.line == null) return {};
   if (loc.endLine != null && loc.endLine !== loc.line) {
-    return { file: loc.file, line: loc.line, endLine: loc.endLine };
+    return {
+      file: loc.file,
+      line: loc.line,
+      ...(loc.column != null ? { column: loc.column } : {}),
+      endLine: loc.endLine,
+    };
   }
-  return { file: loc.file, line: loc.line };
+  return { file: loc.file, line: loc.line, ...(loc.column != null ? { column: loc.column } : {}) };
 }
 
 /** Format as `file:line` or `file:line-line`. */

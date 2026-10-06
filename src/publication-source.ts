@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { posix } from "node:path";
 import { parseSource } from "./extract.js";
 import { collectStepsFromBody } from "./languages/typescript.js";
 import { detectLanguage } from "./languages/registry.js";
@@ -12,6 +13,7 @@ export type PublicationFunction = {
   flow: string;
   unsupported: boolean;
   shadowed: Set<string>;
+  imports: Map<string, { path: string; name: string }>;
 };
 
 const callable = new Set([
@@ -38,37 +40,59 @@ const wrappers = new Set([
   "type_assertion",
   "parenthesized_expression",
 ]);
-const unsupportedFlow = new Set([
-  "yield_expression",
-  "switch_statement",
-  "for_statement",
-  "for_in_statement",
-  "while_statement",
-  "do_statement",
-  "ternary_expression",
-  "break_statement",
-  "continue_statement",
-]);
 
 export function inspectPublicationSource(file: string, source: string) {
   const tree = parseSource(file, source);
   if (tree.rootNode.hasError) throw new Error(`Parse error in ${file}`);
-  const functions = detectLanguage(file)!.extract(file, source, tree);
+  const imports = new Map<string, { path: string; name: string }>();
+  for (const statement of tree.rootNode.namedChildren) {
+    if (statement.type !== "import_statement") continue;
+    const source = statement.childForFieldName("source")?.namedChild(0)?.text;
+    if (!source?.startsWith(".")) continue;
+    for (const specifier of statement.descendantsOfType("import_specifier")) {
+      const name = specifier.childForFieldName("name")?.text;
+      const alias = specifier.childForFieldName("alias")?.text ?? name;
+      if (name && alias)
+        imports.set(alias, {
+          path: posix.normalize(posix.join(posix.dirname(file), source)),
+          name,
+        });
+    }
+  }
+  const extracted = detectLanguage(file)!.extract(file, source, tree);
+  const functions = extracted.filter((fn) => {
+    const node = tree.rootNode.descendantForIndex(fn.start, fn.end);
+    return (
+      node.parent?.type !== "arguments" ||
+      !extracted.some((owner) => owner.start < fn.start && owner.end >= fn.end)
+    );
+  });
   const nodes = new Map<number, SyntaxNode>();
-  const anonymous: SyntaxNode[] = [];
+
   const walk = (node: SyntaxNode) => {
     if (callable.has(node.type)) {
       nodes.set(node.startIndex, node);
-      if (!functions.some((fn) => fn.start === node.startIndex)) anonymous.push(node);
     }
     for (const child of node.namedChildren) walk(child);
   };
   walk(tree.rootNode);
+  // Top-level registrations and callbacks need an owner too. This source unit
+  // records module call flow; it is not a claimed runtime entrypoint.
+  functions.push({
+    key: "<module>",
+    label: `${file} (module)`,
+    file,
+    exported: false,
+    start: -1,
+    end: source.length + 1,
+    steps: [],
+  });
+  nodes.set(-1, tree.rootNode);
 
   const inspected = functions.map((info): PublicationFunction => {
     const node = nodes.get(info.start)!;
     const owners = functions
-      .filter((fn) => fn.start < info.start && fn.end >= info.end)
+      .filter((fn) => fn.start >= 0 && fn.start < info.start && fn.end >= info.end)
       .sort((a, b) => a.start - b.start);
     const id = `${file}::${[...owners.map((fn) => fn.key), info.key].join("/")}`;
     const conditions = new Map<string, string>();
@@ -79,22 +103,13 @@ export function inspectPublicationSource(file: string, source: string) {
         unsupported = true;
     }
     const inspect = (child: SyntaxNode) => {
-      if (child !== node && callable.has(child.type)) {
-        if (!functions.some((fn) => fn.start === child.startIndex)) unsupported = true;
+      if (
+        (child.startIndex !== node.startIndex || child.type !== node.type) &&
+        callable.has(child.type) &&
+        functions.some((fn) => fn.start === child.startIndex)
+      )
         return;
-      }
-      if (unsupportedFlow.has(child.type)) unsupported = true;
-      if (child.type === "call_expression" || child.type === "new_expression") {
-        const callee = child.namedChild(0);
-        if (callee && callee.type !== "identifier" && callee.type !== "member_expression")
-          unsupported = true;
-        if (
-          callee?.type === "member_expression" &&
-          !["identifier", "this"].includes(callee.namedChild(0)?.type ?? "")
-        )
-          unsupported = true;
-        if (child.descendantsOfType("optional_chain").length) unsupported = true;
-      }
+      if (child.type === "yield_expression") unsupported = true;
       if (child.type === "formal_parameters") {
         for (const name of child.descendantsOfType([
           "identifier",
@@ -133,13 +148,6 @@ export function inspectPublicationSource(file: string, source: string) {
               shadowed.add(binding.text);
         }
       }
-      if (
-        child.type === "binary_expression" &&
-        child.children.some((n) => ["&&", "||", "??"].includes(n.type)) &&
-        child.descendantsOfType(["call_expression", "jsx_element", "jsx_self_closing_element"])
-          .length > 0
-      )
-        unsupported = true;
       if (child.type === "if_statement") {
         const condition = child.childForFieldName("condition");
         if (condition) {
@@ -185,21 +193,37 @@ export function inspectPublicationSource(file: string, source: string) {
       }
     }
     const normalized = steps(
-      collectStepsFromBody(file, node.childForFieldName("body"), className, true),
+      collectStepsFromBody(
+        file,
+        info.start === -1 ? node : node.childForFieldName("body"),
+        className,
+        {
+          isDefinition: (child) => functions.some((fn) => fn.start === child.startIndex),
+          isReference: (key) =>
+            !shadowed.has(key) && (functions.some((fn) => fn.key === key) || imports.has(key)),
+        },
+      ),
     );
     return {
       id,
-      info: { ...info, steps: normalized, line: node.startPosition.row + 1 },
-      body: fingerprint(node, node),
+      info: {
+        ...info,
+        label: info.label.replace(/\(\)\(/, "("),
+        steps: normalized,
+        line: node.startPosition.row + 1,
+      },
+      body:
+        info.start === -1
+          ? JSON.stringify(shape(normalized))
+          : fingerprint(node, node, new Set(functions.map((fn) => fn.start))),
       flow: JSON.stringify(shape(normalized)),
       unsupported,
       shadowed,
+      imports,
     };
   });
   return {
     functions: inspected,
-    // Unaddressable callbacks must not silently disappear from the denominator.
-    anonymous: anonymous.map((node) => fingerprint(node)).join("\n"),
   };
 }
 
@@ -208,17 +232,22 @@ function shape(steps: CallStep[]): object[] {
     const children = shape(step.children ?? []);
     return step.type === "branch" &&
       children.length === 0 &&
-      !["return", "throw"].includes(step.key)
+      !/^(return|throw|break|continue)( |$)/.test(step.key)
       ? []
       : [{ type: step.type, key: step.key, children }];
   });
 }
 
-function fingerprint(node: SyntaxNode, owner?: SyntaxNode): string {
+function fingerprint(node: SyntaxNode, owner?: SyntaxNode, definitions?: Set<number>): string {
   const tokens: string[] = [];
   const visit = (part: SyntaxNode) => {
     if (erased.has(part.type)) return;
-    if (owner && part !== owner && callable.has(part.type)) {
+    if (
+      owner &&
+      part.startIndex !== owner.startIndex &&
+      callable.has(part.type) &&
+      definitions?.has(part.startIndex)
+    ) {
       tokens.push(part.type, part.childForFieldName("name")?.text ?? "callback");
       return;
     }

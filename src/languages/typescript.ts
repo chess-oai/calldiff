@@ -12,6 +12,11 @@ import {
   type Tree,
 } from "./types.js";
 
+type PublicationContext = {
+  isDefinition: (node: SyntaxNode) => boolean;
+  isReference: (key: string) => boolean;
+};
+
 function isFnLike(type: string): boolean {
   return (
     type === "function_declaration" ||
@@ -106,6 +111,25 @@ function calleeKey(node: SyntaxNode, className: string | null): string | null {
   return null;
 }
 
+function publicationCallee(node: SyntaxNode): string {
+  if (node.type === "call_expression" || node.type === "new_expression") {
+    const target = node.namedChild(0);
+    return `${node.type === "new_expression" ? "new " : ""}${target ? publicationCallee(target) : "?"}()`;
+  }
+  if (node.type === "member_expression") {
+    const object = node.childForFieldName("object");
+    const property = node.childForFieldName("property");
+    return `${object ? publicationCallee(object) : "?"}.${property?.text ?? "?"}`;
+  }
+  if (node.type === "subscript_expression") {
+    const object = node.childForFieldName("object");
+    return `${object ? publicationCallee(object) : "?"}[computed]`;
+  }
+  return ["identifier", "this", "import"].includes(node.type)
+    ? node.text
+    : node.type;
+}
+
 /**
  * Treat JSX tags as component "calls". PascalCase identifiers and any
  * member expression (`Foo.Bar`, `motion.div`) count; lowercase tags are HTML.
@@ -139,54 +163,254 @@ function collectStatements(
   file: string,
   statements: SyntaxNode[],
   className: string | null,
-  preserveControlFlow = false,
+  publication?: PublicationContext,
 ): CallStep[] {
+  const location = (node: SyntaxNode) => ({
+    ...locFromNode(file, node),
+    ...(publication ? { column: node.startPosition.column + 1 } : {}),
+  });
   const steps: CallStep[] = [];
   const seenCalls = new Set<string>();
 
-  const addCall = (key: string, node: SyntaxNode) => {
+  const addCall = (key: string, node: SyntaxNode, children?: CallStep[]) => {
     const mark = `${key}:${node.startIndex}`;
     if (seenCalls.has(mark)) return;
     seenCalls.add(mark);
-    steps.push({ type: "call", key, ...locFromNode(file, node) });
+    const args = publication ? childByType(node, "arguments") : null;
+    const label = args
+      ? `${key}(${namedChildren(args)
+          .map((arg) => {
+            if (
+              [
+                "identifier",
+                "member_expression",
+                "string",
+                "number",
+                "true",
+                "false",
+                "null",
+              ].includes(arg.type)
+            )
+              return collapseWs(arg.text);
+            if (isFnLike(arg.type)) return "callback";
+            return "…";
+          })
+          .join(", ")})`
+      : undefined;
+    steps.push({
+      type: "call",
+      key,
+      label,
+      ...location(node),
+      children,
+    });
   };
 
   const walkExpr = (node: SyntaxNode): void => {
     const type = node.type;
 
-    if (isFnLike(type) && type !== "method_definition") {
+    if (isFnLike(type) && (publication || type !== "method_definition")) {
+      if (publication && !publication.isDefinition(node)) {
+        steps.push({
+          type: "branch",
+          key: "callback",
+          label: "callback (not an immediate call)",
+          ...location(node),
+          children: collectStepsFromBody(
+            file,
+            node.childForFieldName("body"),
+            className,
+            publication,
+          ),
+        });
+      }
       return;
     }
 
-    if (preserveControlFlow && type === "try_statement") {
+    if (publication && type === "ternary_expression") {
+      const condition = node.childForFieldName("condition");
+      const arms = [
+        ["consequence", `if (${condition ? condText(condition) : "?"})`],
+        ["alternative", "else"],
+      ].map(([field, label]) => {
+        const body = node.childForFieldName(field!);
+        return {
+          type: "branch" as const,
+          key: label!,
+          label: label!,
+          ...location(node),
+          children: body
+            ? collectStatements(file, [body], className, publication)
+            : [],
+        };
+      });
+      if (arms.some((arm) => arm.children.length)) steps.push(...arms);
+      else if (condition) walkExpr(condition);
+      return;
+    }
+    if (publication && type === "binary_expression") {
+      const operator = node.children.find((child) =>
+        ["&&", "||", "??"].includes(child.type),
+      );
+      const left = node.childForFieldName("left");
+      const right = node.childForFieldName("right");
+      if (operator && left && right) {
+        walkExpr(left);
+        const label =
+          operator.type === "&&"
+            ? `if (${condText(left)})`
+            : operator.type === "||"
+              ? `if not (${condText(left)})`
+              : `if nullish (${condText(left)})`;
+        const children = collectStatements(
+          file,
+          [right],
+          className,
+          publication,
+        );
+        if (children.length)
+          steps.push({
+            type: "branch",
+            key: label,
+            label,
+            ...location(right),
+            children,
+          });
+        return;
+      }
+    }
+    if (publication && type === "switch_statement") {
+      const value = node.childForFieldName("value");
+      const body = node.childForFieldName("body");
+      const label = `switch ${value?.text ?? ""}`;
+      steps.push({
+        type: "branch",
+        key: label,
+        label,
+        ...location(node),
+        children: (body ? namedChildren(body) : [])
+          .filter((child) => child.type !== "comment")
+          .map((arm) => {
+            const value = arm.childForFieldName("value");
+            const label = value ? `case ${collapseWs(value.text)}` : "default";
+            return {
+              type: "branch",
+              key: label,
+              label,
+              ...location(arm),
+              children: collectStatements(
+                file,
+                namedChildren(arm).filter(
+                  (child) => child.startIndex !== value?.startIndex,
+                ),
+                className,
+                publication,
+              ),
+            };
+          }),
+      });
+      return;
+    }
+    if (
+      publication &&
+      [
+        "for_statement",
+        "for_in_statement",
+        "while_statement",
+        "do_statement",
+      ].includes(type)
+    ) {
+      const body = node.childForFieldName("body");
+      const label =
+        type === "do_statement"
+          ? `do … while ${node.childForFieldName("condition")?.text ?? ""}`
+          : collapseWs(
+              node.text.slice(
+                0,
+                (body?.startIndex ?? node.endIndex) - node.startIndex,
+              ),
+            );
+      steps.push({
+        type: "branch",
+        key: label,
+        label,
+        ...location(node),
+        children: body
+          ? collectStatements(file, statementsOf(body), className, publication)
+          : [],
+      });
+      return;
+    }
+
+    if (publication && type === "try_statement") {
       for (const child of namedChildren(node).filter((child) =>
-        ["statement_block", "catch_clause", "finally_clause"].includes(child.type),
+        ["statement_block", "catch_clause", "finally_clause"].includes(
+          child.type,
+        ),
       )) {
-        const kind = child.type === "catch_clause" ? "catch"
-          : child.type === "finally_clause" ? "finally" : "try";
+        const kind =
+          child.type === "catch_clause"
+            ? "catch"
+            : child.type === "finally_clause"
+              ? "finally"
+              : "try";
         const body = child.childForFieldName("body") ?? child;
         const parameter = child.childForFieldName("parameter");
         steps.push({
           type: "branch",
           key: kind,
           label: parameter ? `${kind} (${parameter.text})` : kind,
-          ...locFromNode(file, child),
-          children: collectStatements(file, statementsOf(body), className, true),
+          ...location(child),
+          children: collectStatements(
+            file,
+            statementsOf(body),
+            className,
+            publication,
+          ),
         });
       }
       return;
     }
     if (
-      preserveControlFlow &&
-      ["await_expression", "return_statement", "throw_statement"].includes(type)
+      publication &&
+      [
+        "await_expression",
+        "return_statement",
+        "throw_statement",
+        "break_statement",
+        "continue_statement",
+      ].includes(type)
     ) {
       const kind = type.split("_")[0]!;
+      const value = node.namedChild(0);
+      const label =
+        kind !== "await" &&
+        value &&
+        !value.descendantsOfType([
+          "call_expression",
+          "new_expression",
+          "jsx_element",
+          "jsx_self_closing_element",
+        ]).length &&
+        ![
+          "call_expression",
+          "new_expression",
+          "jsx_element",
+          "jsx_self_closing_element",
+        ].includes(value.type)
+          ? `${kind} ${collapseWs(value.text)}`
+          : kind;
       steps.push({
         type: "branch",
-        key: kind,
-        label: kind,
-        ...locFromNode(file, node),
-        children: collectStatements(file, namedChildren(node), className, true),
+        key: label,
+        label,
+        ...location(node),
+        children: collectStatements(
+          file,
+          namedChildren(node),
+          className,
+          publication,
+        ),
       });
       return;
     }
@@ -202,7 +426,8 @@ function collectStatements(
         kids.find(
           (c) =>
             c.type !== "parenthesized_expression" && c.type !== "else_clause",
-        ) ?? null;
+        ) ??
+        null;
       const elseClause = childByType(node, "else_clause");
       const cond = test ? condText(test) : "";
 
@@ -210,10 +435,13 @@ function collectStatements(
         type: "branch",
         key: branchKey("if", cond),
         label: test ? `if (${condText(test)})` : "if",
-        ...locFromNode(file, test ?? node),
+        ...location(test ?? node),
         children: consequent
           ? collectStatements(
-              file, statementsOf(consequent), className, preserveControlFlow,
+              file,
+              statementsOf(consequent),
+              className,
+              publication,
             )
           : [],
       });
@@ -233,16 +461,20 @@ function collectStatements(
               (c) =>
                 c.type !== "parenthesized_expression" &&
                 c.type !== "else_clause",
-            ) ?? null;
+            ) ??
+            null;
           const elseCond = elseTest ? condText(elseTest) : "";
           steps.push({
             type: "branch",
             key: branchKey("else-if", elseCond),
             label: elseTest ? `else if (${condText(elseTest)})` : "else if",
-            ...locFromNode(file, elseTest ?? current),
+            ...location(elseTest ?? current),
             children: elseConsequent
               ? collectStatements(
-                  file, statementsOf(elseConsequent), className, preserveControlFlow,
+                  file,
+                  statementsOf(elseConsequent),
+                  className,
+                  publication,
                 )
               : [],
           });
@@ -254,9 +486,12 @@ function collectStatements(
           type: "branch",
           key: branchKey("else", ""),
           label: "else",
-          ...locFromNode(file, current),
+          ...location(current),
           children: collectStatements(
-            file, statementsOf(inner), className, preserveControlFlow,
+            file,
+            statementsOf(inner),
+            className,
+            publication,
           ),
         });
         break;
@@ -265,15 +500,95 @@ function collectStatements(
     }
 
     if (
-      preserveControlFlow &&
+      publication &&
       (type === "call_expression" || type === "new_expression")
     ) {
-      for (const child of namedChildren(node)) walkExpr(child);
       const callee = node.namedChild(0);
-      const key = callee
-        ? calleeKey(callee, type === "new_expression" ? null : className)
+      const args = childByType(node, "arguments");
+      if (callee) walkExpr(callee);
+      const argumentStart = steps.length;
+      const callbacks: CallStep[] = [];
+      for (const arg of args ? namedChildren(args) : []) {
+        const value = stripTypeWrappers(arg);
+        if (isFnLike(value.type)) {
+          callbacks.push(
+            ...collectStatements(file, [value], className, publication),
+          );
+        } else {
+          walkExpr(arg);
+          const reference = calleeKey(value, className);
+          if (
+            ["identifier", "member_expression"].includes(value.type) &&
+            reference &&
+            publication.isReference(reference)
+          ) {
+            callbacks.push({
+              type: "branch",
+              key: `reference:${reference}`,
+              label: "passed reference (invocation not inferred)",
+              ...location(value),
+              children: [
+                {
+                  type: "call",
+                  key: reference,
+                  label: `definition: ${value.text}`,
+                  ...location(value),
+                },
+              ],
+            });
+          }
+        }
+      }
+      // Complex receivers stay opaque. Spelling out the receiver avoids merging
+      // unrelated methods or inventing a lexical target for a dynamic call.
+      let key = callee
+        ? (calleeKey(callee, type === "new_expression" ? null : className) ??
+          publicationCallee(callee))
         : null;
-      if (key) addCall(type === "new_expression" ? `new ${key}` : key, node);
+      if (
+        callee?.type === "member_expression" &&
+        !["identifier", "this"].includes(callee.namedChild(0)?.type ?? "")
+      ) {
+        key = publicationCallee(callee);
+      }
+      if (key) {
+        const call = () =>
+          addCall(
+            type === "new_expression" ? `new ${key}` : key!,
+            node,
+            callbacks,
+          );
+        let optional = node.children.some((child) =>
+          ["optional_chain", "?."].includes(child.type),
+        );
+        for (
+          let receiver = callee;
+          receiver &&
+          [
+            "member_expression",
+            "subscript_expression",
+            "call_expression",
+          ].includes(receiver.type);
+          receiver =
+            receiver.childForFieldName("object") ??
+            receiver.childForFieldName("function")
+        ) {
+          optional ||= receiver.children.some((child) =>
+            ["optional_chain", "?."].includes(child.type),
+          );
+        }
+        if (optional) {
+          call();
+          const children = steps.splice(argumentStart);
+          steps.push({
+            type: "branch",
+            key: `optional:${key}`,
+            label: `if available (${key})`,
+            ...location(node),
+            children,
+          });
+        } else call();
+      }
       return;
     }
 
@@ -300,19 +615,16 @@ function collectStatements(
       const fromAttrs: CallStep[] = [];
       if (opening) {
         for (const attr of namedChildren(opening)) {
-          if (
-            attr.type === "jsx_attribute" ||
-            attr.type === "jsx_expression"
-          ) {
+          if (attr.type === "jsx_attribute" || attr.type === "jsx_expression") {
             fromAttrs.push(
-              ...collectStatements(file, [attr], className, preserveControlFlow),
+              ...collectStatements(file, [attr], className, publication),
             );
           }
         }
       }
       const nested = [
         ...fromAttrs,
-        ...collectStatements(file, childNodes, className, preserveControlFlow),
+        ...collectStatements(file, childNodes, className, publication),
       ];
       if (opening) {
         const key = jsxCalleeKey(opening);
@@ -321,7 +633,7 @@ function collectStatements(
             steps.push({
               type: "call",
               key,
-              ...locFromNode(file, opening),
+              ...location(opening),
               children: nested,
             });
           } else {
@@ -336,16 +648,14 @@ function collectStatements(
       const attrNodes = namedChildren(node).filter(
         (c) => c.type === "jsx_attribute" || c.type === "jsx_expression",
       );
-      const nested = collectStatements(
-        file, attrNodes, className, preserveControlFlow,
-      );
+      const nested = collectStatements(file, attrNodes, className, publication);
       const key = jsxCalleeKey(node);
       if (key) {
         if (nested.length > 0) {
           steps.push({
             type: "call",
             key,
-            ...locFromNode(file, node),
+            ...location(node),
             children: nested,
           });
         } else {
@@ -374,15 +684,13 @@ export function collectStepsFromBody(
   file: string,
   body: SyntaxNode | null,
   className: string | null,
-  preserveControlFlow = false,
+  publication?: PublicationContext,
 ): CallStep[] {
   if (!body) return [];
   if (body.type === "statement_block") {
-    return collectStatements(
-      file, namedChildren(body), className, preserveControlFlow,
-    );
+    return collectStatements(file, namedChildren(body), className, publication);
   }
-  return collectStatements(file, [body], className, preserveControlFlow);
+  return collectStatements(file, [body], className, publication);
 }
 
 function functionFromParts(

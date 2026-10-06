@@ -99,57 +99,67 @@ source files from Git at the repository root, even when invoked from a package
 directory or sparse checkout. It accepts no path or entrypoint filters, so a
 narrow excerpt cannot shrink the coverage denominator.
 
-Coverage is the number of changed functions whose complete direct call-flow
-edits appear in the selected excerpts, divided by all functions with executable
-AST changes. Each source function counts once. Comments, formatting, and erased
-TypeScript types do not count; argument and literal fixes do count, even when
-their call trees are unchanged. Nested named functions are counted separately
-from their enclosing function. Matching uses file, enclosing function scope, and
-name; moves and renames count as removals and additions.
+The gate measures two things across the complete PR:
 
-The fixed initial gate requires:
+- **Flow coverage** (`flowCoverage`): the fraction of added/removed call and
+  control-flow nodes represented by the selected excerpts. Changes are counted
+  at their source definitions, so expanding the same helper twice earns no extra
+  credit. A function earns credit only when all its flow edits are visible;
+  depth-clipped callback bodies do not count.
+- **Breadth** (`coverage`): covered definitions divided by all definitions with
+  executable AST changes. Argument and literal edits remain in this denominator.
+  This prevents a two-method excerpt from representing a hundred-method change.
 
-- At least two directly changed functions connected in each excerpt, or one
-  changed function with at least two distinct changed callees inside changed
-  control flow (for example, a guarded retry)
-- At least 80% coverage across the PR
-- At most two excerpts and 30 total tree lines, including the separator
-- At most four call edges below each root, with no credit for clipped bodies
+Comments, formatting, and erased TypeScript types do not count. Named nested
+functions are separate definitions; inline callbacks belong to their enclosing
+function. Module-level call flow has a `<module>` source unit. Pure module data
+edits are outside these metrics. A uniquely matched function moved between files
+with an identical body does not count as two behavioral edits.
 
-Candidates come from definitions in the changed files. Selection maximizes
-distinct covered functions, then minimizes lines, then uses stable source
-identity order. Unchanged siblings are pruned unless needed to show the context
-of a direct edit, such as reordered calls. Retained control-flow context keeps
-its exits and calls visible, including the work following a retry.
+The gate requires at least 50% flow coverage and 30% breadth, within two excerpts
+and 60 total tree lines. Each excerpt must show connected changed definitions,
+multiple changed operations with control flow, or at least three changed call
+families. Two excerpts may instead show the same call moving between roots.
+A fluent chain counts as one call family for this usefulness check, and logging
+calls alone cannot qualify. These thresholds select a substantial portion of the
+flow; they do not claim that a diagram explains every edit or the PR's intent.
 
-The JSON result contains `decision`, `reasons`, `coverage` (a fraction),
-`changedFunctions`, `coveredFunctions`, `excludedFiles`, `limits`, and `trees`.
-Only `include` returns publishable `ascii`. `omit` means the gate did not pass.
-`unsupported` has null coverage because the tool cannot certify the comparison;
-its function inventory may be incomplete. Neither result should produce a
-Calldiff section or diagnostic text in a PR description. An agent may omit an
-eligible excerpt, but should not override a failed gate without author direction.
+Selection prefers an existing changed caller over detached added/deleted helpers,
+then chooses the shortest excerpt set meeting both coverage thresholds. Ties
+prefer greater flow coverage, then stable source identity order.
+Candidates include outlines with and without helper expansion, bounded to six
+call edges; clipped edits never earn coverage. Only changed definitions are expanded. Unchanged context
+is trimmed and marked `… unchanged`; relevant guards, exits, and neighboring
+calls remain visible. Simple call arguments appear in labels to identify things
+such as event names and callback references. Argument changes alone do not count
+as call-flow changes.
 
-This first version supports TypeScript and TSX, including `.mts` and `.cts`.
-It excludes declaration files, conventional test/spec and generated filenames,
-and test, fixture, mock, generated (`gen` or `generated`), vendor, dependency,
-and build directories. Excluded and unsupported file contents are not loaded.
-These are path conventions, not a semantic classifier; inspect `excludedFiles`
-when adopting the command in a repository with different conventions.
+The result contains `decision`, `reasons`, both coverage fractions,
+`changedFlowNodes`, `coveredFlowNodes`, `changedFunctions`,
+`flowChangedFunctions`, `coveredFunctions`, `excludedFiles`, `limits`, and
+`trees`. Only `include` returns publishable `ascii`. `omit` means the gate did
+not pass. `unsupported` has null coverage because parsing, ambiguous identities,
+or an unsupported source language prevents a complete inventory. An unsupported
+flow within a known definition stays in the denominator but earns no credit.
+Neither failure result belongs in a PR description. An agent may veto an eligible
+excerpt when it does not help explain the change.
 
-To avoid guessed call relationships, expansion follows only unambiguous lexical
-definitions in the same changed file. Imported and dynamic targets remain
-opaque leaves. Unchanged files are not indexed. Changed anonymous callbacks,
-parse failures, and unsupported source languages prevent publication. Flow
-changes involving constructs the publication outline does not model, including
-loops, switch, ternaries, and short-circuit calls, also return `unsupported`.
-Publication outlines preserve `await`, `try`/`catch`/`finally`, and `return`/`throw`.
-Conditions appear in full as opaque expressions; calls inside them are not
-expanded or credited as coverage of their callees. These are static source
-outlines, not runtime traces. Module-level changes are outside the function
-coverage metric.
-These limits favor omission; the thresholds are starting policy, not a measured
-guarantee that an excerpt explains the PR's purpose.
+Publication supports TypeScript/TSX and JavaScript/JSX, including `.mts`, `.cts`,
+`.mjs`, and `.cjs`. It reuses their AST extractors and models callbacks, module
+registrations, loops, switch arms, ternaries, short-circuit expressions, await,
+try/catch/finally, and exits. Callback bodies and passed references are labeled
+explicitly; their invocation timing is not inferred. Generator flow remains
+unsupported. Complex expressions in guards are printed as opaque expressions,
+not expanded or credited as calls to other definitions. These are static source
+outlines, not runtime traces or data-flow proofs.
+
+Expansion follows unambiguous lexical definitions and explicit named relative
+imports between changed files. Package imports, aliases, re-exports, and dynamic
+targets remain opaque. Declaration files, conventional test/spec and generated
+filenames, and test, fixture, mock, generated (`gen` or `generated`), vendor,
+dependency, and build directories are excluded before loading their contents.
+Inspect `excludedFiles` when adopting the command in a repository with different
+conventions.
 
 ### `tree`
 
