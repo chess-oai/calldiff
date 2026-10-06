@@ -139,6 +139,7 @@ function collectStatements(
   file: string,
   statements: SyntaxNode[],
   className: string | null,
+  preserveControlFlow = false,
 ): CallStep[] {
   const steps: CallStep[] = [];
   const seenCalls = new Set<string>();
@@ -157,6 +158,39 @@ function collectStatements(
       return;
     }
 
+    if (preserveControlFlow && type === "try_statement") {
+      for (const child of namedChildren(node).filter((child) =>
+        ["statement_block", "catch_clause", "finally_clause"].includes(child.type),
+      )) {
+        const kind = child.type === "catch_clause" ? "catch"
+          : child.type === "finally_clause" ? "finally" : "try";
+        const body = child.childForFieldName("body") ?? child;
+        const parameter = child.childForFieldName("parameter");
+        steps.push({
+          type: "branch",
+          key: kind,
+          label: parameter ? `${kind} (${parameter.text})` : kind,
+          ...locFromNode(file, child),
+          children: collectStatements(file, statementsOf(body), className, true),
+        });
+      }
+      return;
+    }
+    if (
+      preserveControlFlow &&
+      ["await_expression", "return_statement", "throw_statement"].includes(type)
+    ) {
+      const kind = type.split("_")[0]!;
+      steps.push({
+        type: "branch",
+        key: kind,
+        label: kind,
+        ...locFromNode(file, node),
+        children: collectStatements(file, namedChildren(node), className, true),
+      });
+      return;
+    }
+
     if (type === "if_statement") {
       const test =
         childByType(node, "parenthesized_expression") ??
@@ -164,6 +198,7 @@ function collectStatements(
         null;
       const kids = namedChildren(node);
       const consequent =
+        node.childForFieldName("consequence") ??
         kids.find(
           (c) =>
             c.type !== "parenthesized_expression" && c.type !== "else_clause",
@@ -177,7 +212,9 @@ function collectStatements(
         label: test ? `if (${condText(test)})` : "if",
         ...locFromNode(file, test ?? node),
         children: consequent
-          ? collectStatements(file, statementsOf(consequent), className)
+          ? collectStatements(
+              file, statementsOf(consequent), className, preserveControlFlow,
+            )
           : [],
       });
 
@@ -191,6 +228,7 @@ function collectStatements(
             childByType(inner, "parenthesized_expression") ?? null;
           const elseKids = namedChildren(inner);
           const elseConsequent =
+            inner.childForFieldName("consequence") ??
             elseKids.find(
               (c) =>
                 c.type !== "parenthesized_expression" &&
@@ -203,7 +241,9 @@ function collectStatements(
             label: elseTest ? `else if (${condText(elseTest)})` : "else if",
             ...locFromNode(file, elseTest ?? current),
             children: elseConsequent
-              ? collectStatements(file, statementsOf(elseConsequent), className)
+              ? collectStatements(
+                  file, statementsOf(elseConsequent), className, preserveControlFlow,
+                )
               : [],
           });
           current = childByType(inner, "else_clause");
@@ -215,10 +255,25 @@ function collectStatements(
           key: branchKey("else", ""),
           label: "else",
           ...locFromNode(file, current),
-          children: collectStatements(file, statementsOf(inner), className),
+          children: collectStatements(
+            file, statementsOf(inner), className, preserveControlFlow,
+          ),
         });
         break;
       }
+      return;
+    }
+
+    if (
+      preserveControlFlow &&
+      (type === "call_expression" || type === "new_expression")
+    ) {
+      for (const child of namedChildren(node)) walkExpr(child);
+      const callee = node.namedChild(0);
+      const key = callee
+        ? calleeKey(callee, type === "new_expression" ? null : className)
+        : null;
+      if (key) addCall(type === "new_expression" ? `new ${key}` : key, node);
       return;
     }
 
@@ -249,13 +304,15 @@ function collectStatements(
             attr.type === "jsx_attribute" ||
             attr.type === "jsx_expression"
           ) {
-            fromAttrs.push(...collectStatements(file, [attr], className));
+            fromAttrs.push(
+              ...collectStatements(file, [attr], className, preserveControlFlow),
+            );
           }
         }
       }
       const nested = [
         ...fromAttrs,
-        ...collectStatements(file, childNodes, className),
+        ...collectStatements(file, childNodes, className, preserveControlFlow),
       ];
       if (opening) {
         const key = jsxCalleeKey(opening);
@@ -279,7 +336,9 @@ function collectStatements(
       const attrNodes = namedChildren(node).filter(
         (c) => c.type === "jsx_attribute" || c.type === "jsx_expression",
       );
-      const nested = collectStatements(file, attrNodes, className);
+      const nested = collectStatements(
+        file, attrNodes, className, preserveControlFlow,
+      );
       const key = jsxCalleeKey(node);
       if (key) {
         if (nested.length > 0) {
@@ -310,16 +369,20 @@ function collectStatements(
   return steps;
 }
 
-function collectStepsFromBody(
+/** Reuse callable extraction while retaining exits and async/error boundaries for publication. */
+export function collectStepsFromBody(
   file: string,
   body: SyntaxNode | null,
   className: string | null,
+  preserveControlFlow = false,
 ): CallStep[] {
   if (!body) return [];
   if (body.type === "statement_block") {
-    return collectStatements(file, namedChildren(body), className);
+    return collectStatements(
+      file, namedChildren(body), className, preserveControlFlow,
+    );
   }
-  return collectStatements(file, [body], className);
+  return collectStatements(file, [body], className, preserveControlFlow);
 }
 
 function functionFromParts(

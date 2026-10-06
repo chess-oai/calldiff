@@ -130,8 +130,16 @@ export function runPublication(options: {
           (!after.has(key) || rightComplete.has(key)),
       ),
     );
-    // Two isolated local edits do not become explanatory merely by sharing a budget.
-    if (covered.size < 2) continue;
+    // A single function can explain a retry or guard change. Require multiple
+    // distinct callees inside changed control flow, not just a renamed leaf.
+    const changedCalls = new Set<string>();
+    const visit = (node: DiffNode, inChangedBranch = false): void => {
+      const inside = inChangedBranch || (node.kind === "branch" && node.status !== "same");
+      if (inside && node.kind !== "branch" && node.status !== "same") changedCalls.add(node.key);
+      for (const child of node.children) visit(child, inside);
+    };
+    visit(diff);
+    if (covered.size === 0 || (covered.size === 1 && changedCalls.size < 2)) continue;
     const tree = prune(diff);
     const ascii = renderDiff(tree, { color: false });
     const lines = ascii.split("\n").length;
@@ -237,6 +245,13 @@ function prune(node: DiffNode): DiffNode {
     ...node,
     children: node.children
       .filter((child) => directChange || treeHasChanges(child))
-      .map((child) => (treeHasChanges(child) ? prune(child) : { ...child, children: [] })),
+      .map((child) => (treeHasChanges(child) ? prune(child) : context(child))),
+  };
+}
+
+function context(node: DiffNode): DiffNode {
+  return {
+    ...node,
+    children: node.kind === "branch" ? node.children.map(context) : [],
   };
 }

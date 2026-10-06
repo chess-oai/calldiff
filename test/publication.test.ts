@@ -30,20 +30,62 @@ describe("PR publication gate", () => {
     expect(result.ascii).toContain("read()");
   });
 
+  test("publishes an awaited retry with its catch guard and following work", () => {
+    const host = workspace({
+      "flow.ts": `async function refresh() {
+        if (environment.skip?.trim() === "yes") return;
+        await storage.prepare(path.dirname(destination));
+        await storage.remove(destination);
+        await copy(destination);
+      }`,
+    });
+    host.commit("retry permission failure", {
+      "flow.ts": `async function refresh() {
+        if (environment.skip?.trim() === "yes") return;
+        await storage.prepare(path.dirname(destination));
+        try { await storage.remove(destination); }
+        catch (error) {
+          if (error.code !== "ACCESS") throw error;
+          await repair(destination);
+          await storage.remove(destination);
+        }
+        await copy(destination);
+      }`,
+    });
+    const result = runPublication({ cwd: host.root, base: "HEAD~", head: "HEAD" });
+    expect(result).toMatchObject({ decision: "include", coverage: 1 });
+    expect(result.changedFunctions).toHaveLength(1);
+    expect(result.ascii).toContain("catch (error)");
+    expect(result.ascii).toContain('if (error.code !== "ACCESS")');
+    expect(result.ascii).toContain("throw");
+    expect(result.ascii).toContain("return");
+    expect(result.ascii).toContain("repair()");
+    expect(result.ascii).toContain("copy()");
+    expect(result.ascii.indexOf("path.dirname()")).toBeLessThan(
+      result.ascii.indexOf("storage.prepare()"),
+    );
+  });
+
+  test("does not publish one renamed call or one changed call guard", () => {
+    const host = workspace({ "flow.ts": "function run() { if (ready) send(); }" });
+    host.commit("guard change", { "flow.ts": "function run() { if (enabled) send(); }" });
+    expect(runPublication({ cwd: host.root, base: "HEAD~", head: "HEAD" }).decision).toBe("omit");
+    host.commit("callee change", { "flow.ts": "function run() { if (enabled) deliver(); }" });
+    expect(runPublication({ cwd: host.root, base: "HEAD~", head: "HEAD" }).decision).toBe("omit");
+  });
+
   test("counts all 100 changed functions even when invoked from a subdirectory", () => {
     const host = workspace({
       "src/flow.ts": before,
-      "elsewhere/data.ts": Array.from(
-        { length: 98 },
-        (_, i) => `const data${i} = () => 1;`,
-      ).join("\n"),
+      "elsewhere/data.ts": Array.from({ length: 98 }, (_, i) => `const data${i} = () => 1;`).join(
+        "\n",
+      ),
     });
     host.commit("broad change", {
       "src/flow.ts": after,
-      "elsewhere/data.ts": Array.from(
-        { length: 98 },
-        (_, i) => `const data${i} = () => 2;`,
-      ).join("\n"),
+      "elsewhere/data.ts": Array.from({ length: 98 }, (_, i) => `const data${i} = () => 2;`).join(
+        "\n",
+      ),
     });
     const result = runPublication({ cwd: join(host.root, "src"), base: "HEAD~", head: "HEAD" });
     expect(result).toMatchObject({
@@ -121,6 +163,15 @@ describe("PR publication gate", () => {
     });
     host.commit("shadowed before", { "flow.ts": before.replace("start()", "start({work})") });
     host.commit("shadowed after", { "flow.ts": after.replace("start()", "start({work})") });
+    expect(runPublication({ cwd: host.root, base: "HEAD~", head: "HEAD" }).decision).toBe("omit");
+    host.commit("catch before", {
+      "flow.ts":
+        "function start() { try { oldPath(); } catch (work) { work(); } } function work() { read(); }",
+    });
+    host.commit("catch after", {
+      "flow.ts":
+        "function start() { try { newPath(); } catch (work) { work(); } } function work() { write(); }",
+    });
     expect(runPublication({ cwd: host.root, base: "HEAD~", head: "HEAD" }).decision).toBe("omit");
   });
   test("compares against the merge base without including later base-branch work", () => {

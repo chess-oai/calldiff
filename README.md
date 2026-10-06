@@ -109,7 +109,9 @@ name; moves and renames count as removals and additions.
 
 The fixed initial gate requires:
 
-- At least two directly changed functions connected in each excerpt
+- At least two directly changed functions connected in each excerpt, or one
+  changed function with at least two distinct changed callees inside changed
+  control flow (for example, a guarded retry)
 - At least 80% coverage across the PR
 - At most two excerpts and 30 total tree lines, including the separator
 - At most four call edges below each root, with no credit for clipped bodies
@@ -117,7 +119,8 @@ The fixed initial gate requires:
 Candidates come from definitions in the changed files. Selection maximizes
 distinct covered functions, then minimizes lines, then uses stable source
 identity order. Unchanged siblings are pruned unless needed to show the context
-of a direct edit, such as reordered calls.
+of a direct edit, such as reordered calls. Retained control-flow context keeps
+its exits and calls visible, including the work following a retry.
 
 The JSON result contains `decision`, `reasons`, `coverage` (a fraction),
 `changedFunctions`, `coveredFunctions`, `excludedFiles`, `limits`, and `trees`.
@@ -138,9 +141,13 @@ To avoid guessed call relationships, expansion follows only unambiguous lexical
 definitions in the same changed file. Imported and dynamic targets remain
 opaque leaves. Unchanged files are not indexed. Changed anonymous callbacks,
 parse failures, and unsupported source languages prevent publication. Flow
-changes involving constructs the extractor does not model, including await,
-loops, try/switch, short-circuit evaluation, and conditional exits, also return
-`unsupported`. Module-level changes are outside the function coverage metric.
+changes involving constructs the publication outline does not model, including
+loops, switch, ternaries, and short-circuit calls, also return `unsupported`.
+Publication outlines preserve `await`, `try`/`catch`/`finally`, and `return`/`throw`.
+Conditions appear in full as opaque expressions; calls inside them are not
+expanded or credited as coverage of their callees. These are static source
+outlines, not runtime traces. Module-level changes are outside the function
+coverage metric.
 These limits favor omission; the thresholds are starting policy, not a measured
 guarantee that an excerpt explains the PR's purpose.
 

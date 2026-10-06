@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { parseSource } from "./extract.js";
+import { collectStepsFromBody } from "./languages/typescript.js";
 import { detectLanguage } from "./languages/registry.js";
 import type { SyntaxNode } from "./languages/types.js";
 import type { CallStep, FunctionInfo } from "./types.js";
@@ -38,9 +39,7 @@ const wrappers = new Set([
   "parenthesized_expression",
 ]);
 const unsupportedFlow = new Set([
-  "await_expression",
   "yield_expression",
-  "try_statement",
   "switch_statement",
   "for_statement",
   "for_in_statement",
@@ -103,6 +102,17 @@ export function inspectPublicationSource(file: string, source: string) {
         ]))
           shadowed.add(name.text);
       }
+      if (child.type === "catch_clause") {
+        const parameter = child.childForFieldName("parameter");
+        if (parameter?.type === "identifier") shadowed.add(parameter.text);
+        else if (parameter) {
+          for (const name of parameter.descendantsOfType([
+            "identifier",
+            "shorthand_property_identifier_pattern",
+          ]))
+            shadowed.add(name.text);
+        }
+      }
       if (child.type === "assignment_expression") {
         const target = child.childForFieldName("left");
         if (target?.type === "identifier") shadowed.add(target.text);
@@ -125,7 +135,9 @@ export function inspectPublicationSource(file: string, source: string) {
       }
       if (
         child.type === "binary_expression" &&
-        child.children.some((n) => ["&&", "||", "??"].includes(n.type))
+        child.children.some((n) => ["&&", "||", "??"].includes(n.type)) &&
+        child.descendantsOfType(["call_expression", "jsx_element", "jsx_self_closing_element"])
+          .length > 0
       )
         unsupported = true;
       if (child.type === "if_statement") {
@@ -140,27 +152,41 @@ export function inspectPublicationSource(file: string, source: string) {
             .trim();
           conditions.set(`if:${text}`, fingerprint(condition));
           conditions.set(`else-if:${text}`, fingerprint(condition));
-          if (condition.descendantsOfType("call_expression").length) unsupported = true;
         }
-        // The extractor does not model a branch terminating the surrounding flow.
-        if (child.descendantsOfType(["return_statement", "throw_statement"]).length)
-          unsupported = true;
       }
-      for (const nested of child.namedChildren) inspect(nested);
+      for (const nested of child.namedChildren) {
+        // Conditions are printed in full as opaque expressions, never expanded
+        // or credited as calls to other changed functions.
+        if (
+          child.type === "if_statement" &&
+          nested.startIndex === child.childForFieldName("condition")?.startIndex
+        )
+          continue;
+        inspect(nested);
+      }
     };
     inspect(node);
     const steps = (items: CallStep[]): CallStep[] =>
       items.map((step) => ({
         ...step,
         key:
-          step.type === "branch" && step.key !== "else"
+          step.type === "branch" && conditions.has(step.key)
             ? `${step.key.split(":")[0]}:${conditions.get(step.key) ?? step.key}`
             : step.key,
         ...(step.type === "branch" || step.children
           ? { children: steps(step.children ?? []) }
           : {}),
       }));
-    const normalized = steps(info.steps);
+    let className: string | null = null;
+    for (let parent = node.parent; parent; parent = parent.parent) {
+      if (["class_declaration", "abstract_class_declaration", "class"].includes(parent.type)) {
+        className = parent.childForFieldName("name")?.text ?? null;
+        break;
+      }
+    }
+    const normalized = steps(
+      collectStepsFromBody(file, node.childForFieldName("body"), className, true),
+    );
     return {
       id,
       info: { ...info, steps: normalized, line: node.startPosition.row + 1 },
@@ -180,7 +206,9 @@ export function inspectPublicationSource(file: string, source: string) {
 function shape(steps: CallStep[]): object[] {
   return steps.flatMap((step) => {
     const children = shape(step.children ?? []);
-    return step.type === "branch" && children.length === 0
+    return step.type === "branch" &&
+      children.length === 0 &&
+      !["return", "throw"].includes(step.key)
       ? []
       : [{ type: step.type, key: step.key, children }];
   });
