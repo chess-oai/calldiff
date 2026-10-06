@@ -730,7 +730,7 @@ const TRANSPARENT_EXPRESSIONS = new Set([
  * matched on its own terms. In every one of these the value is the first named
  * child, except `<T>fn`, where the leading `type_arguments` comes first.
  */
-function stripTypeWrappers(node: SyntaxNode): SyntaxNode {
+export function stripTypeWrappers(node: SyntaxNode): SyntaxNode {
   let current = node;
   while (TRANSPARENT_EXPRESSIONS.has(current.type)) {
     const inner = namedChildren(current).find(

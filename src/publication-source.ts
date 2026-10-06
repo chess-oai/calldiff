@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import { parseSource } from "./extract.js";
-import { collectStepsFromBody } from "./languages/typescript.js";
+import { collectStepsFromBody, stripTypeWrappers } from "./languages/typescript.js";
 import { detectLanguage } from "./languages/registry.js";
 import type { SyntaxNode } from "./languages/types.js";
 import type { CallStep, FunctionInfo } from "./types.js";
@@ -33,13 +33,6 @@ const erased = new Set([
   "type_alias_declaration",
   "accessibility_modifier",
 ]);
-const wrappers = new Set([
-  "as_expression",
-  "satisfies_expression",
-  "non_null_expression",
-  "type_assertion",
-  "parenthesized_expression",
-]);
 
 export function inspectPublicationSource(file: string, source: string) {
   const tree = parseSource(file, source);
@@ -67,15 +60,6 @@ export function inspectPublicationSource(file: string, source: string) {
       !extracted.some((owner) => owner.start < fn.start && owner.end >= fn.end)
     );
   });
-  const nodes = new Map<number, SyntaxNode>();
-
-  const walk = (node: SyntaxNode) => {
-    if (callable.has(node.type)) {
-      nodes.set(node.startIndex, node);
-    }
-    for (const child of node.namedChildren) walk(child);
-  };
-  walk(tree.rootNode);
   // Top-level registrations and callbacks need an owner too. This source unit
   // records module call flow; it is not a claimed runtime entrypoint.
   functions.push({
@@ -87,10 +71,10 @@ export function inspectPublicationSource(file: string, source: string) {
     end: source.length + 1,
     steps: [],
   });
-  nodes.set(-1, tree.rootNode);
 
   const inspected = functions.map((info): PublicationFunction => {
-    const node = nodes.get(info.start)!;
+    const node =
+      info.start === -1 ? tree.rootNode : tree.rootNode.descendantForIndex(info.start, info.end);
     const owners = functions
       .filter((fn) => fn.start >= 0 && fn.start < info.start && fn.end >= info.end)
       .sort((a, b) => a.start - b.start);
@@ -251,9 +235,9 @@ function fingerprint(node: SyntaxNode, owner?: SyntaxNode, definitions?: Set<num
       tokens.push(part.type, part.childForFieldName("name")?.text ?? "callback");
       return;
     }
-    if (wrappers.has(part.type)) {
-      const value = part.namedChildren.find((child) => child.type !== "type_arguments");
-      if (value) visit(value);
+    const value = stripTypeWrappers(part);
+    if (value !== part) {
+      visit(value);
       return;
     }
     if (["readonly", "abstract", ";", ","].includes(part.type)) return;
