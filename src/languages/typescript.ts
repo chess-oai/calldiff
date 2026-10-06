@@ -448,11 +448,8 @@ function extractDeclaratorFunction(
 ): void {
   const id = childByType(d, "identifier");
   if (!id) return;
-  // The initialiser is the declarator's value child — everything but the
-  // name and any type annotation — with its type wrappers peeled off.
-  const value = namedChildren(d).find(
-    (c) => c !== id && c.type !== "type_annotation",
-  );
+  // SyntaxNode wrappers do not have stable object identity across traversals.
+  const value = d.childForFieldName("value");
   const init = value ? stripTypeWrappers(value) : null;
   if (!init) return;
   if (init.type === "arrow_function" || init.type === "function_expression") {

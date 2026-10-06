@@ -28,14 +28,14 @@ describe("PR publication gate", () => {
       "src/flow.ts": before,
       "elsewhere/data.ts": Array.from(
         { length: 98 },
-        (_, i) => `function data${i}() { return 1; }`,
+        (_, i) => `const data${i} = () => 1;`,
       ).join("\n"),
     });
     host.commit("broad change", {
       "src/flow.ts": after,
       "elsewhere/data.ts": Array.from(
         { length: 98 },
-        (_, i) => `function data${i}() { return 2; }`,
+        (_, i) => `const data${i} = () => 2;`,
       ).join("\n"),
     });
     const result = runPublication({ cwd: join(host.root, "src"), base: "HEAD~", head: "HEAD" });
@@ -47,6 +47,7 @@ describe("PR publication gate", () => {
     });
     expect(result.changedFunctions).toHaveLength(100);
     expect(result.coveredFunctions).toHaveLength(2);
+    expect(runPublication({ cwd: host.root, base: "HEAD~", head: "HEAD" })).toEqual(result);
   });
 
   test("ignores type and formatting edits but counts executable argument fixes", () => {
